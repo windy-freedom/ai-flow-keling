@@ -1,8 +1,8 @@
 import time
 import jwt
 
-ak = "ACPp3YnM9eyJHHH99FBY9pfMhBdM9BYM" # fill access key
-sk = "Ta9KADtGyBatYtFhrTmmHRLtBeDdbNyf" # fill secret key
+ak = "从可灵获取" # fill access key
+sk = "从可灵获取" # fill secret key
 
 def encode_jwt_token(ak, sk):
     headers = {
