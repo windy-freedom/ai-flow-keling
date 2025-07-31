@@ -1,7 +1,20 @@
 import requests
 import json
+import os
+import urllib.request
 
-def query_image_generation_task(task_id: str):
+def download_file(url: str, save_path: str):
+    """下载文件到指定路径"""
+    try:
+        print(f"正在下载文件: {url} 到 {save_path}...")
+        urllib.request.urlretrieve(url, save_path)
+        print(f"文件下载成功: {save_path}")
+        return True
+    except Exception as e:
+        print(f"文件下载失败: {url}, 错误: {e}")
+        return False
+
+def query_image_generation_task(task_id: str, download_files: bool = False):
     print(f"开始查询图片生成任务: {task_id}...")
 
     # 从api_token.txt读取鉴权信息
@@ -35,6 +48,19 @@ def query_image_generation_task(task_id: str):
                     image_url = task_result["images"][0].get("url") # 假设只生成一张图片
                     if image_url:
                         print(f"图片URL: {image_url}")
+                        
+                        if download_files:
+                            # 确保下载目录存在
+                            download_dir = "downloads"
+                            os.makedirs(download_dir, exist_ok=True)
+                            
+                            # 从URL中提取文件名，并去除查询参数
+                            file_name = os.path.basename(image_url)
+                            if '?' in file_name:
+                                file_name = file_name.split('?')[0]
+                            save_path = os.path.join(download_dir, file_name)
+                            download_file(image_url, save_path)
+
                         return image_url
             return None
         return None

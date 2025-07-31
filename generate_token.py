@@ -1,13 +1,8 @@
 import time
 import jwt
-import os
 
-# 从环境变量中读取 AK 和 SK
-ak = os.environ.get("AK")
-sk = os.environ.get("SK")
-
-if not ak or not sk:
-    raise ValueError("环境变量 AK 和 SK 必须设置")
+ak = "ACPp3YnM9eyJHHH99FBY9pfMhBdM9BYM" # fill access key
+sk = "Ta9KADtGyBatYtFhrTmmHRLtBeDdbNyf" # fill secret key
 
 def encode_jwt_token(ak, sk):
     headers = {
@@ -23,7 +18,6 @@ def encode_jwt_token(ak, sk):
     return token
 
 authorization = encode_jwt_token(ak, sk)
-print("API Token 已生成")
-# 如果需要将 token 保存到文件，请在调用此脚本的地方处理
-# with open('api_token.txt', 'w') as f:
-#     f.write(authorization)
+with open('api_token.txt', 'w') as f:
+    f.write(authorization)
+print("API Token 已生成并保存到 api_token.txt")
