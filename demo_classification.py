@@ -8,7 +8,7 @@ import shutil
 import re
 from pathlib import Path
 from image_renamer import ImageRenamer
-from dashscope import MultiModalConversation
+from dashscope import MultiModalConversation, Generation
 
 def get_smart_category(renamer, image_path):
     """Use AI to intelligently determine the best category for an image"""
@@ -73,34 +73,130 @@ def get_smart_category(renamer, image_path):
         print(f"Error getting smart category for {image_path}: {e}")
         return 'misc'
 
-def classify_and_organize_all_images(rename_files=True):
-    """Intelligently classify and organize all images based on AI analysis, with optional renaming"""
-    print("=== Smart Image Classification and Organization ===\n")
+def read_file_content(file_path):
+    """Reads the content of a text file."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except Exception as e:
+        print(f"Error reading file {file_path}: {e}")
+        return None
+
+def analyze_text_content(text_content, api_key=None):
+    """Analyzes text content using Qwen-turbo and returns a descriptive name."""
+    if not text_content:
+        return None
+    
+    prompt = """Analyze the following text content and provide a short, descriptive filename (2-4 words) that captures its main subject or content.
+    Focus on the most prominent elements like topics, themes, or key entities.
+    Respond with only the descriptive name, no additional text or explanation.
+    Examples: "project_report", "meeting_minutes", "travel_guide", "recipe_book"
+    
+    Text content:
+    """ + text_content[:1000] # Limit text content to avoid exceeding token limits
+
+    try:
+        response = Generation.call(
+            model='qwen-turbo',
+            prompt=prompt,
+            api_key=api_key # Use provided API key if available
+        )
+        
+        if response.status_code == 200 and response.output.text:
+            # Sanitize filename similar to ImageRenamer
+            text_name = response.output.text.strip()
+            text_name = re.sub(r'[<>:"/\\|?*]', '', text_name)
+            text_name = re.sub(r'[\s\-\.]+', '_', text_name)
+            text_name = re.sub(r'_+', '_', text_name)
+            text_name = text_name.strip('_')
+            text_name = text_name[:50] # Limit length
+            return text_name.lower()
+        else:
+            print(f"DashScope API error for analyze_text_content: {response.message}")
+            return None
+    except Exception as e:
+        print(f"Error analyzing text content: {e}")
+        return None
+
+def classify_text_content(text_content, api_key=None):
+    """Classifies text content using Qwen-turbo and returns a category."""
+    if not text_content:
+        return 'misc'
+    
+    prompt = """Analyze the following text content and classify it into one of these general categories:
+    
+    Categories:
+    - documents: reports, articles, essays, research papers, official records
+    - notes: meeting minutes, personal notes, memos, drafts
+    - code: programming scripts, configuration files, logs, technical specifications
+    - creative: stories, poems, scripts, lyrics, artistic descriptions
+    - data: lists, tables, raw data, spreadsheets, databases
+    - communication: emails, chats, messages, letters, transcripts
+    - misc: anything that doesn't fit well into other categories
+    
+    Respond with only the category name (e.g., "documents", "notes", "code"), no additional text.
+    
+    Text content:
+    """ + text_content[:1000] # Limit text content
+
+    try:
+        response = Generation.call(
+            model='qwen-turbo',
+            prompt=prompt,
+            api_key=api_key # Use provided API key if available
+        )
+        
+        if response.status_code == 200 and response.output.text:
+            category = response.output.text.strip().lower()
+            category = re.sub(r'[^a-z0-9_]', '', category)
+            category = re.sub(r'_+', '_', category)
+            category = category.strip('_')
+            
+            # Validate against a predefined list of categories or default to 'misc'
+            valid_categories = {'documents', 'notes', 'code', 'creative', 'data', 'communication', 'misc'}
+            if category in valid_categories:
+                return category
+            else:
+                return 'misc'
+        else:
+            print(f"DashScope API error for classify_text_content: {response.message}")
+            return 'misc'
+    except Exception as e:
+        print(f"Error classifying text content: {e}")
+        return 'misc'
+
+def classify_and_organize_all_media(rename_files=True):
+    """Intelligently classify and organize all media (images and text) based on AI analysis, with optional renaming"""
+    print("=== Smart Media Classification and Organization ===\n")
     
     try:
         # Initialize the renamer (it will read API key from config.json)
         renamer = ImageRenamer()
         
-        # Define the directory containing images
-        pics_dir = Path("downloads")
+        # Define the directory containing media files
+        media_dir = Path("downloads")
         
-        # Supported image extensions
+        # Supported media extensions
         image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
+        text_extensions = {'.txt', '.md'} # Add more as needed
         
-        # Find all image files in the specified directory (not in subdirectories)
-        image_files = []
+        # Find all media files in the specified directory (not in subdirectories)
+        media_files = []
         for ext in image_extensions:
-            image_files.extend(pics_dir.glob(f"*{ext}"))
-            image_files.extend(pics_dir.glob(f"*{ext.upper()}"))
+            media_files.extend(media_dir.glob(f"*{ext}"))
+            media_files.extend(media_dir.glob(f"*{ext.upper()}"))
+        for ext in text_extensions:
+            media_files.extend(media_dir.glob(f"*{ext}"))
+            media_files.extend(media_dir.glob(f"*{ext.upper()}"))
         
         # Convert to a list to avoid issues with files being moved during iteration
-        image_files = list(image_files)
+        media_files = list(media_files)
         
-        if not image_files:
-            print(f"No image files found in the specified directory to classify")
+        if not media_files:
+            print(f"No media files found in the specified directory to classify")
             return
         
-        print(f"Found {len(image_files)} image(s) to analyze and organize...")
+        print(f"Found {len(media_files)} media file(s) to analyze and organize...")
         if rename_files:
             print("Mode: Rename + Smart Classification")
         else:
@@ -110,25 +206,53 @@ def classify_and_organize_all_images(rename_files=True):
         category_counts = {}
         created_folders = set()
         
-        for image_file in image_files:
-            print(f"\nAnalyzing: {image_file.name}")
+        for media_file in media_files:
+            print(f"\nAnalyzing: {media_file.name}")
             
-            # Get smart category suggestion from AI
-            category = get_smart_category(renamer, image_file)
-            print(f"  → AI suggested category: {category}")
+            file_extension = media_file.suffix.lower()
             
-            # Get descriptive name if renaming is enabled
             new_name = None
-            if rename_files:
-                new_name = renamer.analyze_image(image_file)
-                if new_name:
-                    print(f"  → AI suggested name: {new_name}")
-                else:
-                    print(f"  → Could not generate new name, keeping original")
-                    new_name = image_file.stem
+            category = None
             
+            if file_extension in image_extensions:
+                # Process as image
+                category = get_smart_category(renamer, media_file)
+                print(f"  → AI suggested category (Image): {category}")
+                if rename_files:
+                    new_name = renamer.analyze_image(media_file)
+                    if new_name:
+                        print(f"  → AI suggested name (Image): {new_name}")
+                    else:
+                        print(f"  → Could not generate new name for image, keeping original")
+                        new_name = media_file.stem
+            elif file_extension in text_extensions:
+                # Process as text
+                text_content = read_file_content(media_file)
+                if text_content:
+                    category = classify_text_content(text_content, api_key=renamer.api_key) # Pass API key
+                    print(f"  → AI suggested category (Text): {category}")
+                    if rename_files:
+                        new_name = analyze_text_content(text_content, api_key=renamer.api_key) # Pass API key
+                        if new_name:
+                            print(f"  → AI suggested name (Text): {new_name}")
+                        else:
+                            print(f"  → Could not generate new name for text, keeping original")
+                            new_name = media_file.stem
+                else:
+                    print(f"  → Could not read text file content: {media_file.name}")
+                    new_name = media_file.stem # Keep original name if content can't be read
+                    category = 'misc' # Default category
+            else:
+                print(f"  → Unsupported file type: {media_file.name}, skipping.")
+                continue # Skip unsupported files
+            
+            if not category: # Fallback if AI classification fails for any reason
+                category = 'misc'
+            if not new_name: # Fallback if AI renaming fails for any reason
+                new_name = media_file.stem
+
             # Create category folder if it doesn't exist
-            category_dir = pics_dir / category
+            category_dir = media_dir / category
             if category not in created_folders:
                 category_dir.mkdir(exist_ok=True)
                 created_folders.add(category)
@@ -136,29 +260,22 @@ def classify_and_organize_all_images(rename_files=True):
                     category_counts[category] = 0
             
             # Determine final filename
-            if rename_files and new_name:
-                final_filename = f"{new_name}{image_file.suffix}"
-            else:
-                final_filename = image_file.name
+            final_filename = f"{new_name}{media_file.suffix}"
             
             # Move to category folder
             destination = category_dir / final_filename
             
             # Handle filename conflicts
             counter = 1
-            original_destination = destination
             while destination.exists():
-                if rename_files and new_name:
-                    destination = category_dir / f"{new_name}_{counter}{image_file.suffix}"
-                else:
-                    stem = image_file.stem
-                    suffix = image_file.suffix
-                    destination = category_dir / f"{stem}_{counter}{suffix}"
+                stem = new_name # Use the new_name as stem for conflict resolution
+                suffix = media_file.suffix
+                destination = category_dir / f"{stem}_{counter}{suffix}"
                 counter += 1
             
             try:
-                shutil.move(str(image_file), str(destination))
-                if rename_files and new_name and destination.name != image_file.name:
+                shutil.move(str(media_file), str(destination))
+                if rename_files and new_name and destination.name != media_file.name:
                     print(f"  → Renamed and moved to: {category}/{destination.name}")
                 else:
                     print(f"  → Moved to: {category}/{destination.name}")
@@ -167,17 +284,17 @@ def classify_and_organize_all_images(rename_files=True):
                 print(f"  ✗ Error moving file: {e}")
         
         print(f"\n=== Classification Summary ===")
-        print(f"Total images processed: {len(image_files)}")
+        print(f"Total media processed: {len(media_files)}")
         print(f"Categories created: {len(created_folders)}")
         
         for category, count in sorted(category_counts.items()):
-            print(f"  {category}: {count} images")
+            print(f"  {category}: {count} media files")
         
         # Show contents of each category folder
         print(f"\n=== Folder Contents ===")
         for category in sorted(created_folders):
-            category_path = pics_dir / category
-            files = [f for f in category_path.glob("*") if f.is_file() and f.suffix.lower() in image_extensions]
+            category_path = media_dir / category
+            files = [f for f in category_path.glob("*") if f.is_file() and f.suffix.lower() in (image_extensions | text_extensions)]
             if files:
                 print(f"\n{category}/ ({len(files)} files):")
                 for file in sorted(files):
@@ -188,7 +305,7 @@ def classify_and_organize_all_images(rename_files=True):
 
 def identify_and_organize_animals():
     """Legacy function - now calls the smart classification function"""
-    classify_and_organize_all_images()
+    classify_and_organize_all_media()
 
 def demo_classification():
     """Original demo function for backward compatibility"""
@@ -222,10 +339,10 @@ def main():
         identify_and_organize_animals()
     elif args.mode == "rename-classify":
         # New mode: rename + smart classification
-        classify_and_organize_all_images(rename_files=True)
+        classify_and_organize_all_media(rename_files=True)
     elif args.mode == "classify-only":
         # New mode: smart classification without renaming
-        classify_and_organize_all_images(rename_files=False)
+        classify_and_organize_all_media(rename_files=False)
 
 if __name__ == "__main__":
     main()

@@ -29,6 +29,7 @@ class ImageRenamer:
                 if not api_key:
                     raise ValueError("Please provide DashScope API key in config.json, as parameter, or set DASHSCOPE_API_KEY environment variable")
             dashscope.api_key = api_key
+        self.api_key = api_key # Store API key as instance variable
         
         # Initialize the model (Qwen-VL-Max for multimodal, which is the latest and most powerful version)
         self.model_name = 'qwen-vl-max'
