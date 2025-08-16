@@ -64,6 +64,50 @@ def save_prompts_to_file(prompts: list, keyword: str):
     except Exception as e:
         print(f"Error saving prompts to file {filename}: {e}")
 
+def image_to_prompt(image_path: Path):
+    """
+    Generates a descriptive text prompt from an image using a multimodal model.
+    """
+    print(f"--- 开始从图片生成提示词: {image_path.name} ---")
+    try:
+        prompt_text = """请详细描述这张图片的内容，包括主体、背景、风格、色彩、光线、构图等，生成一个用于图片或视频生成的详细提示词。
+        请直接给出提示词，不要包含任何额外说明或前缀。
+        """
+        
+        messages = [
+            {
+                'role': 'user',
+                'content': [
+                    {'image': f'file://{image_path}'},
+                    {'text': prompt_text}
+                ]
+            }
+        ]
+        
+        response = MultiModalConversation.call(model='qwen-vl-plus', messages=messages)
+        
+        if response.status_code == 200 and response.output.choices:
+            generated_prompt = ""
+            for item in response.output.choices[0].message.content:
+                if isinstance(item, dict) and 'text' in item:
+                    generated_prompt = item['text'].strip()
+                    break
+            
+            if generated_prompt:
+                print(f"  → 生成的提示词: {generated_prompt}")
+                print(f"--- 图片到提示词生成完成 ---")
+                return generated_prompt
+            else:
+                print(f"DashScope API: 未能从图片生成有效提示词。")
+                return None
+        else:
+            print(f"DashScope API error for image_to_prompt: {response.message}")
+            return None
+        
+    except Exception as e:
+        print(f"从图片生成提示词失败: {e}")
+        return None
+
 def get_smart_category(renamer, image_path):
     """Use AI to intelligently determine the best category for an image"""
     try:
@@ -186,6 +230,87 @@ def classify_single_image(image_path: Path):
     except Exception as e:
         print(f"图片分类或重命名失败: {e}")
 
+def evaluate_and_select_best_image(image_urls: list, original_prompt: str):
+    """
+    Evaluates a list of image URLs based on a given prompt using AI,
+    and selects the best one based on matching, aesthetics, and clarity.
+    Returns the URL of the best image.
+    """
+    print("\n--- 开始AI评价并选择最佳图片 ---")
+    best_image_url = None
+    highest_score = -1 # Assuming a score from 0-100 or similar
+
+    evaluation_prompt_template = f"""请评价这张图片与以下提示词的匹配度、美观度和清晰度。
+    原始提示词: "{original_prompt}"
+
+    请根据以下标准给出1到100的综合评分，并简要说明理由。
+    评分标准：
+    1.  **匹配度 (Prompt Adherence):** 图片内容与原始提示词的符合程度。
+    2.  **美观度 (Aesthetics):** 图片的整体视觉吸引力、色彩和谐、构图平衡等。
+    3.  **清晰度 (Clarity):** 图片的细节、锐利度、是否有模糊或噪点。
+
+    请以JSON格式返回结果，包含'score' (整数) 和 'reason' (字符串)。
+    例如: {{"score": 85, "reason": "图片与提示词高度匹配，色彩鲜明，构图良好，但略有模糊。"}}
+    """
+
+    for idx, image_url in enumerate(image_urls):
+        print(f"  → 评价图片 {idx+1}/{len(image_urls)}: {image_url}")
+        try:
+            messages = [
+                {
+                    'role': 'user',
+                    'content': [
+                        {'image': image_url}, # Use image URL directly
+                        {'text': evaluation_prompt_template}
+                    ]
+                }
+            ]
+            
+            response = MultiModalConversation.call(model='qwen-vl-plus', messages=messages) # Use qwen-vl-plus for evaluation
+            
+            if response.status_code == 200 and response.output.choices:
+                evaluation_result_text = ""
+                for item in response.output.choices[0].message.content:
+                    if isinstance(item, dict) and 'text' in item:
+                        evaluation_result_text = item['text'].strip()
+                        break
+                
+                try:
+                    # Attempt to parse the JSON response
+                    evaluation_data = json.loads(evaluation_result_text)
+                    score = evaluation_data.get('score', 0)
+                    reason = evaluation_data.get('reason', '无理由')
+                    
+                    print(f"    评分: {score}, 理由: {reason}")
+
+                    if score > highest_score:
+                        highest_score = score
+                        best_image_url = image_url
+                        print(f"    当前最佳图片更新为: {best_image_url} (得分: {highest_score})")
+                except json.JSONDecodeError:
+                    print(f"    AI返回结果非JSON格式，尝试从文本中提取分数: {evaluation_result_text}")
+                    # Fallback: try to extract score from text if JSON parsing fails
+                    score_match = re.search(r'"score":\s*(\d+)', evaluation_result_text)
+                    if score_match:
+                        score = int(score_match.group(1))
+                        print(f"    从文本中提取到分数: {score}")
+                        if score > highest_score:
+                            highest_score = score
+                            best_image_url = image_url
+                            print(f"    当前最佳图片更新为: {best_image_url} (得分: {highest_score})")
+                    else:
+                        print(f"    未能从AI评价中提取有效分数。")
+            else:
+                print(f"DashScope API error for image evaluation: {response.message}")
+        except Exception as e:
+            print(f"评价图片 {image_url} 时发生错误: {e}")
+            
+    if best_image_url:
+        print(f"\n--- AI评价完成，选出最佳图片: {best_image_url} (最高得分: {highest_score}) ---")
+    else:
+        print("\n--- 未能选出最佳图片。---")
+    return best_image_url
+
 def run_workflow():
     print("--- 开始执行主流程 ---")
 
@@ -239,46 +364,64 @@ def run_workflow():
     if not download_videos:
         print("将不会下载生成的视频到本地。")
 
-    # 5. 获取总生成次数 和 提示词来源 (通过AI生成)
-    print("\n--- 步骤5: 获取总生成次数和提示词来源 (通过AI生成) ---")
-    keyword = input("请输入关键词 (e.g., 猫): ")
+    # 5. 获取总生成次数 和 提示词来源
+    print("\n--- 步骤5: 获取总生成次数和提示词来源 ---")
+    prompt_source_choice = input("请选择提示词来源 (1: 从图片生成, 2: 输入关键词): ")
+    initial_prompt = ""
+    keyword = "" # Initialize keyword
+    if prompt_source_choice == '1':
+        image_path_str = input("请输入图片文件路径 (e.g., downloads/my_image.png): ")
+        image_file_path = Path(image_path_str)
+        if not image_file_path.exists():
+            print(f"错误: 图片文件 '{image_file_path}' 不存在。流程终止。")
+            return
+        initial_prompt = image_to_prompt(image_file_path)
+        if not initial_prompt:
+            print("未能从图片生成提示词，流程终止。")
+            return
+        print(f"已从图片生成初始提示词: {initial_prompt}")
+        keyword = initial_prompt # Use the generated prompt as the keyword for saving
+    elif prompt_source_choice == '2':
+        keyword = input("请输入关键词 (e.g., 猫): ")
+        initial_prompt = keyword # For keyword input, the initial prompt is the keyword itself
+    else:
+        print("无效的选择，流程终止。")
+        return
+
     while True:
         try:
-            num_prompts_str = input("请输入要生成的提示词数量 (e.g., 3): ")
-            total_generations = int(num_prompts_str)
-            if total_generations <= 0:
-                print("提示词数量必须是正整数。")
+            num_images_to_generate_str = input("请输入要生成的图片数量 (建议3-5张用于AI评价): ")
+            num_images_to_generate = int(num_images_to_generate_str)
+            if num_images_to_generate <= 0:
+                print("图片数量必须是正整数。")
             else:
                 break
         except ValueError:
             print("无效的输入。请输入一个整数。")
 
-    prompts = generate_prompts(keyword, total_generations)
+    # For now, we'll generate prompts based on the initial_prompt/keyword
+    # Later, we'll use the initial_prompt directly for image generation
+    # and generate auxiliary prompts for video.
+    prompts = [initial_prompt] * num_images_to_generate # Generate multiple images from the same initial prompt
+    total_generations = num_images_to_generate # Total generations will be the number of images to generate for evaluation
+    
     if not prompts:
         print("未能生成提示词，流程终止。")
         return
     else:
-        print(f"已通过AI生成 {len(prompts)} 条提示词。")
+        print(f"将生成 {len(prompts)} 张图片用于AI评价。")
         save_prompts_to_file(prompts, keyword) # Save generated prompts to a file
 
-    prompt_index = 0
-    all_generated_image_urls = [] # 新增：用于存储所有生成的图片URL
-
+    # Initialize all_generated_image_urls here, before the loop
+    all_generated_image_urls = [] 
+    
     # 6. 循环执行生成流程 (原步骤5)
     print("\n--- 步骤6: 循环执行生成流程 ---")
-    for i in range(total_generations):
-        print(f"\n--- 开始第 {i+1}/{total_generations} 次生成 ---")
+    # The loop will now iterate 'num_images_to_generate' times, each time using the 'initial_prompt'
+    for i in range(total_generations): # total_generations is now num_images_to_generate
+        print(f"\n--- 开始第 {i+1}/{total_generations} 次图片生成 ---")
 
-        current_prompt = ""
-        if prompt_index < len(prompts):
-            current_prompt = prompts[prompt_index]
-            print(f"使用AI生成提示词: {current_prompt}")
-            prompt_index += 1
-        else:
-            # This case should ideally not be reached if total_generations == len(prompts)
-            # But as a fallback, ask for manual input if somehow prompts run out
-            print("AI生成提示词已用尽，请输入新的图片生成提示词: ")
-            current_prompt = input()
+        current_prompt = initial_prompt # Always use the initial_prompt for image generation
 
         if not current_prompt:
             print("提示词不能为空，跳过当前生成。")
@@ -310,58 +453,75 @@ def run_workflow():
             print("未能获取图片URL，跳过当前生成。")
             continue
 
-        if generate_video_mode:
-            # 6.3 发起视频生成请求 (原步骤5.3)
-            print("\n--- 步骤6.3: 发起视频生成请求 ---")
-            video_task_id = generate_video(image_url, current_prompt)
-            if not video_task_id:
-                print("视频生成请求失败，跳过当前视频生成。")
-                continue
+    # After generating all images, proceed with evaluation and video generation
+    if not all_generated_image_urls:
+        print("\n没有成功生成任何图片，流程终止。")
+        return
 
-            # 6.4 循环查询视频生成任务状态 (原步骤5.4)
-            print(f"\n--- 步骤6.4: 查询视频生成任务状态 (任务ID: {video_task_id}) ---")
-            video_url = None
-            start_time = time.time()
-            while video_url is None and (time.time() - start_time < 300): # 设置5分钟超时
-                print("等待视频生成完成...")
-                time.sleep(10) # 每10秒查询一次
-                video_url = query_image2video_task(video_task_id, download_videos)
-                if video_url:
-                    print(f"视频生成成功，URL: {video_url}")
-                    break
-                else:
-                    print("视频仍在生成中或查询失败，继续等待...")
+    # 7. AI评价并选择最佳图片
+    print("\n--- 步骤7: AI评价并选择最佳图片 ---")
+    best_image_url = evaluate_and_select_best_image(all_generated_image_urls, initial_prompt)
 
-            if not video_url:
-                print("未能获取视频URL，跳过当前视频生成。")
-                continue
+    if not best_image_url:
+        print("未能选出最佳图片，流程终止。")
+        return
+
+    print(f"\n--- 最佳图片URL: {best_image_url} ---")
+
+    if generate_video_mode:
+        # 8. 为最佳图片生成辅助提示词
+        print("\n--- 步骤8: 为最佳图片生成辅助提示词 ---")
+        # Use the initial_prompt as a base for generating auxiliary prompt
+        auxiliary_prompts = generate_prompts(initial_prompt, 1) # Generate 1 auxiliary prompt
+        auxiliary_prompt = auxiliary_prompts[0] if auxiliary_prompts else initial_prompt # Fallback to initial_prompt
+        print(f"  → 生成的辅助提示词: {auxiliary_prompt}")
+
+        # 9. 发起视频生成请求
+        print("\n--- 步骤9: 发起视频生成请求 ---")
+        video_task_id = generate_video(best_image_url, auxiliary_prompt)
+        if not video_task_id:
+            print("视频生成请求失败，流程终止。")
+            return
+
+        # 10. 循环查询视频生成任务状态
+        print(f"\n--- 步骤10: 查询视频生成任务状态 (任务ID: {video_task_id}) ---")
+        video_url = None
+        start_time = time.time()
+        while video_url is None and (time.time() - start_time < 300): # 设置5分钟超时
+            print("等待视频生成完成...")
+            time.sleep(10) # 每10秒查询一次
+            video_url = query_image2video_task(video_task_id, download_videos)
+            if video_url:
+                print(f"视频生成成功，URL: {video_url}")
+                break
+            else:
+                print("视频仍在生成中或查询失败，继续等待...")
+
+        if not video_url:
+            print("未能获取视频URL，流程终止。")
+            return
+        
+        print(f"\n--- 最终流程结果 ---")
+        print(f"最佳图片URL: {best_image_url}")
+        print(f"生成的视频URL: {video_url}")
+    else:
+        print("\n--- 仅图片模式，流程结束 ---")
+        print(f"最佳图片URL: {best_image_url}")
+        # If in image-only mode and image was downloaded, classify it
+        if download_images:
+            # Reconstruct the local path of the downloaded image
+            download_dir = "downloads"
+            file_name = os.path.basename(best_image_url)
+            if '?' in file_name:
+                file_name = file_name.split('?')[0]
+            local_image_path = Path(download_dir) / file_name
             
-            print(f"最终图片URL: {image_url}")
-            print(f"最终视频URL: {video_url}")
-        else:
-            print(f"仅图片模式，最终图片URL: {image_url}")
-            # If in image-only mode and image was downloaded, classify it
-            if download_images:
-                # Reconstruct the local path of the downloaded image
-                download_dir = "downloads"
-                file_name = os.path.basename(image_url)
-                if '?' in file_name:
-                    file_name = file_name.split('?')[0]
-                local_image_path = Path(download_dir) / file_name
-                
-                if local_image_path.exists():
-                    classify_single_image(local_image_path)
-                else:
-                    print(f"警告: 未找到下载的图片文件 {local_image_path}，跳过分类。")
-
+            if local_image_path.exists():
+                classify_single_image(local_image_path)
+            else:
+                print(f"警告: 未找到下载的图片文件 {local_image_path}，跳过分类。")
 
     print("\n--- 主流程执行完毕 ---")
-    if all_generated_image_urls:
-        print("\n--- 所有生成的图片URL汇总 ---")
-        for idx, url in enumerate(all_generated_image_urls):
-            print(f"图片 {idx+1}: {url}")
-    else:
-        print("\n没有成功生成任何图片URL。")
 
 if __name__ == "__main__":
     run_workflow()
